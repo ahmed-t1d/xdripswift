@@ -294,8 +294,8 @@ public class NightScoutUploadManager:NSObject {
         
         trace("in uploadBgReadingsToNightScout", log: self.oslog, category: ConstantsLog.categoryNightScoutUploadManager, type: .info)
         
-        // get readings to upload, limit to x days, x = ConstantsNightScout.maxDaysToUpload
-        var timeStamp = Date(timeIntervalSinceNow: TimeInterval(-Double(ConstantsNightScout.maxDaysToUpload) * 24.0 * 60.0 * 60.0))
+        // get readings to upload, limit to x days, x = ConstantsNightScout.maxBgReadingsDaysToUpload
+        var timeStamp = Date(timeIntervalSinceNow: TimeInterval(-ConstantsNightScout.maxBgReadingsDaysToUpload))
         
         if let timeStampLatestNightScoutUploadedBgReading = UserDefaults.standard.timeStampLatestNightScoutUploadedBgReading {
             if timeStampLatestNightScoutUploadedBgReading > timeStamp {
@@ -361,13 +361,13 @@ public class NightScoutUploadManager:NSObject {
 
     /// Upload treatments to nightscout, receives the JSON response with the asigned IDS and sets the ids in Core Data.
 	/// - parameters:
-	///     - successHandler : handler called after upload. Only called if upload was required.
+	///     - successHandler : handler called after upload.
 	public func uploadTreatmentsToNightScout(successHandler: (() -> Void)?) {
+        
 		trace("in uploadTreatmentsToNightScout", log: self.oslog, category: ConstantsLog.categoryNightScoutUploadManager, type: .info)
 		
-		// get the latest treatments from the last maxDaysToUpload days
-		// filter by those that have not been uploaded
-		var treatmentsToUpload = treatmentEntryAccessor.getRequireUploadTreatments()
+		// get the latest treatments from the last maxTreatmentsDaysToUpload days that need to be uploaded
+        var treatmentsToUpload = treatmentEntryAccessor.getRequireUploadTreatments(howOld: ConstantsNightScout.maxTreatmentsDaysToUpload)
 		
 		guard treatmentsToUpload.count > 0 else {
 			trace("    no treatments to upload", log: self.oslog, category: ConstantsLog.categoryNightScoutUploadManager, type: .info)
@@ -382,43 +382,73 @@ public class NightScoutUploadManager:NSObject {
 		// map treatments to dictionaryRepresentation
 		let treatmentsDictionaryRepresentation = treatmentsToUpload.map({$0.dictionaryRepresentationForNightScoutUpload()})
 		
-		// The responsedata will contain, in serialized json, the treatments ids asigned by the server.
+		// The responsedata will contain, in serialized json, the treatments ids assigned by the server.
 		uploadDataAndGetResponse(dataToUpload: treatmentsDictionaryRepresentation, traceString: "uploadTreatmentsToNightScout", path: nightScoutTreatmentPath) { (responseData: Data?) in
 			
 			do {
+                
+                guard let responseData = responseData else {
+                    trace("    responseData is nil", log: self.oslog, category: ConstantsLog.categoryNightScoutUploadManager, type: .info)
+                    return
+                }
+                
 				// Try to serialize the data
 				if let responses = try TreatmentNSResponse.arrayFromData(responseData) {
+                    
 					// Be sure to use the correct thread.
-					// Running in the completionHandler thread will
-					// result in issues.
+					// Running in the completionHandler thread will result in issues
 					self.coreDataManager.mainManagedObjectContext.performAndWait {
+                        
 						// Loop over each response and each treatment at treatmentsToUpload
 						// If they match, sets the required fields.
 						// Index used to optimze the loop.
 						for response in responses {
+                            
 							for (index_treatment, treatment) in treatmentsToUpload.enumerated() {
+                                
 								if response.matchesTreatmentEntry(treatment) {
-									/// Found the treatment
+                                    
+									// Found the treatment
 									treatment.uploaded = true
-									/// Sets the id
+                                    
+									// Sets the id
 									treatment.id = response.id
+                                    
 									// Removes from treatmentsToUpload and responses, optimizes the nested loop
 									treatmentsToUpload.remove(at: index_treatment)
+                                    
 									break
+                                    
 								}
+                                
 							}
+                            
 						}
 						
 						self.coreDataManager.saveChanges()
+                        
 					}
 					
 					if let successHandler = successHandler {
 						successHandler()
 					}
-				}
+                    
+                } else {
+                    
+                    if let responseDataAsString = String(bytes: responseData, encoding: .utf8) {
+                        
+                        trace("    json serialization failed. responseData = %{public}@", log: self.oslog, category: ConstantsLog.categoryNightScoutUploadManager, type: .info, responseDataAsString)
+                        
+                    }
+                                        
+                }
+                
 			} catch let error {
+                
 				trace("    uploadTreatmentsToNightScout error at JSONSerialization : %{public}@", log: self.oslog, category: ConstantsLog.categoryNightScoutUploadManager, type: .error, error.localizedDescription)
+                
 			}
+            
 		}
 		
     }
@@ -432,7 +462,7 @@ public class NightScoutUploadManager:NSObject {
         trace("in uploadCalibrationsToNightScout", log: self.oslog, category: ConstantsLog.categoryNightScoutUploadManager, type: .info)
         
         // get the calibrations from the last maxDaysToUpload days
-        let calibrations = calibrationsAccessor.getLatestCalibrations(howManyDays: ConstantsNightScout.maxDaysToUpload, forSensor: nil)
+        let calibrations = calibrationsAccessor.getLatestCalibrations(howManyDays: Int(ConstantsNightScout.maxBgReadingsDaysToUpload.days), forSensor: nil)
         
         var calibrationsToUpload: [Calibration] = []
         if let timeStampLatestNightScoutUploadedCalibration = UserDefaults.standard.timeStampLatestNightScoutUploadedCalibration {
@@ -476,9 +506,11 @@ public class NightScoutUploadManager:NSObject {
 	/// Gets the latest treatments from Nightscout
 	/// - parameters:
 	///     - count: the amount of treatments to return
-	///     - completionHandler: handler that will be caled with the result TreatmentNSResponse array
+	///     - completionHandler: handler that will be called with the result TreatmentNSResponse array
 	public func getLatestTreatmentsNSResponses(count: Int, completionHandler: @escaping (([TreatmentNSResponse]) -> Void)) {
+        
 		let queries = [URLQueryItem(name: "count", value: String(count))]
+        
 		getRequest(path: nightScoutTreatmentPath, queries: queries, traceString: "getLatestTreatmentsNSResponses") { (data: Data?) in
 			
 			guard let data = data else {
@@ -486,14 +518,30 @@ public class NightScoutUploadManager:NSObject {
 			}
 			
 			do {
+                
 				// Try to serialize the data
 				if let responses = try TreatmentNSResponse.arrayFromData(data) {
+                    
 					completionHandler(responses)
-				}
+                    
+                } else {
+                    
+                    if let dataAsString = String(bytes: data, encoding: .utf8) {
+                        
+                        trace("    json serialization failed. data = %{public}@", log: self.oslog, category: ConstantsLog.categoryNightScoutUploadManager, type: .info, dataAsString)
+                        
+                    }
+                    
+                }
+                
 			} catch let error {
+                
 				trace("    getLatestTreatmentsNSResponses error at JSONSerialization : %{public}@", log: self.oslog, category: ConstantsLog.categoryNightScoutUploadManager, type: .error, error.localizedDescription)
+                
 			}
+            
 		}
+        
 	}
 	
 	
@@ -502,10 +550,18 @@ public class NightScoutUploadManager:NSObject {
 	/// - parameters:
 	///     - path : the query path
 	///     - queries : an array of URLQueryItem (added after the '?' at the URL)
-	 ///     - traceString : trace will start with this string, to distinguish between different GETs that may be ongoing simultaneously
+    ///     - traceString : trace will start with this string, to distinguish between different GETs that may be ongoing simultaneously
 	///     - responseHandler : will be executed with the response Data? if successfull
 	private func getRequest(path: String, queries: [URLQueryItem], traceString: String, responseHandler: ((Data?) -> Void)?) {
-		guard let url = URL(string: UserDefaults.standard.nightScoutUrl!), var uRLComponents = URLComponents(url: url.appendingPathComponent(path), resolvingAgainstBaseURL: false) else {
+        
+        trace("in %{public}@", log: self.oslog, category: ConstantsLog.categoryNightScoutUploadManager, type: .info, traceString)
+        
+        guard let nightScoutUrl = UserDefaults.standard.nightScoutUrl else {
+            trace("    nightScoutUrl is nil", log: self.oslog, category: ConstantsLog.categoryNightScoutUploadManager, type: .info)
+            return
+        }
+        
+		guard let url = URL(string: nightScoutUrl), var uRLComponents = URLComponents(url: url.appendingPathComponent(path), resolvingAgainstBaseURL: false) else {
 			return
 		}
 
@@ -522,6 +578,7 @@ public class NightScoutUploadManager:NSObject {
 		uRLComponents.queryItems = queryItems
 		
 		if let url = uRLComponents.url {
+            
 			// Create Request
 			var request = URLRequest(url: url)
 			request.httpMethod = "GET"
@@ -536,16 +593,35 @@ public class NightScoutUploadManager:NSObject {
 				
 				// error cases
 				if let error = error {
-					trace("    in getRequest, %{public}@, failed to upload, error = %{public}@", log: self.oslog, category: ConstantsLog.categoryNightScoutUploadManager, type: .error, traceString, error.localizedDescription)
-				} else {
-					// TODO: Check the HTTPURLResponse response code, unsure how to.
-					if let responseHandler = responseHandler {
-						responseHandler(data)
-					}
+                    
+					trace("    failed to upload, error = %{public}@", log: self.oslog, category: ConstantsLog.categoryNightScoutUploadManager, type: .error, error.localizedDescription)
+                    
+                    return
+                    
 				}
+                    
+                if let hTTPURLResponse = urlResponse as? HTTPURLResponse {
+                    
+                    if hTTPURLResponse.statusCode == 200 {
+                        
+                        if let responseHandler = responseHandler {
+                            responseHandler(data)
+                        }
+                        
+                    } else {
+                    
+                        trace("    status code = %{public}@", log: self.oslog, category: ConstantsLog.categoryNightScoutUploadManager, type: .info, hTTPURLResponse.statusCode.description)
+                        
+                    }
+                    
+                }
+                
 			}
+            
 			task.resume()
+            
 		}
+        
 	}
     
     /// common functionality to upload data to nightscout
@@ -553,8 +629,6 @@ public class NightScoutUploadManager:NSObject {
     ///     - dataToUpload : data to upload
     ///     - traceString : trace will start with this string, to distinguish between different uploads that may be ongoing simultaneously
     ///     - completionHandler : will be executed if upload was successful
-    ///     - siteURL : nightscout site url
-    ///     - apiKey : nightscout api key
     private func uploadData(dataToUpload: Any, traceString: String, path: String, completionHandler: (() -> ())?) {
 		uploadDataAndGetResponse(dataToUpload: dataToUpload, traceString: traceString, path: path) { _ in
 			if let completionHandler = completionHandler {
@@ -572,7 +646,7 @@ public class NightScoutUploadManager:NSObject {
 	///     - apiKey : nightscout api key
 	private func uploadDataAndGetResponse(dataToUpload: Any, traceString: String, path: String, responseHandler: ((Data?) -> Void)?) {
         
-        trace("in uploadData, %{public}@", log: self.oslog, category: ConstantsLog.categoryNightScoutUploadManager, type: .info, traceString)
+        trace("in uploadDataAndGetResponse, %{public}@", log: self.oslog, category: ConstantsLog.categoryNightScoutUploadManager, type: .info, traceString)
         
         do {
             
@@ -581,7 +655,7 @@ public class NightScoutUploadManager:NSObject {
 
             trace("    size of data to upload : %{public}@", log: self.oslog, category: ConstantsLog.categoryNightScoutUploadManager, type: .info, dateToUploadAsJSON.count.description)
 
-            if let url = URL(string: UserDefaults.standard.nightScoutUrl!), var uRLComponents = URLComponents(url: url.appendingPathComponent(path), resolvingAgainstBaseURL: false) {
+            if let nightScoutUrl = UserDefaults.standard.nightScoutUrl, let url = URL(string: nightScoutUrl), var uRLComponents = URLComponents(url: url.appendingPathComponent(path), resolvingAgainstBaseURL: false) {
 
                 if UserDefaults.standard.nightScoutPort != 0 {
                     uRLComponents.port = UserDefaults.standard.nightScoutPort

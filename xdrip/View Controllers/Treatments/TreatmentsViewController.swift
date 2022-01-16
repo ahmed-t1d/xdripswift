@@ -28,25 +28,30 @@ class TreatmentsViewController : UIViewController {
 	
 	// Outlets
 	@IBOutlet weak var titleNavigation: UINavigationItem!
+    
 	@IBOutlet weak var tableView: UITableView!
 	
 	/// Sync button action.
 	@IBAction func syncButtonTapped(_ sender: UIBarButtonItem) {
+        
 		guard let nightScoutUploadManager = nightScoutUploadManager else {
 			return
 		}
 		
 		let alertsuccessHandler: (() -> Void) = {
+            
 			// Make sure to run alert in the correct thread.
 			DispatchQueue.main.async {
+                
 				let alert = UIAlertController(title: Texts_TreatmentsView.success, message: Texts_TreatmentsView.syncCompleted, actionHandler: nil)
 
 				self.present(alert, animated: true, completion: nil)
+                
 			}
+            
 		}
 
-		// Fetches new treatments from Nightscout
-		// TODO: set optimal value for getLatestTreatmentsNSResponses count.
+		// fetch new treatments from Nightscout
 		nightScoutUploadManager.getLatestTreatmentsNSResponses(count: 50) { (responses: [TreatmentNSResponse]) in
 
 			guard let treatmentEntryAccessor = self.treatmentEntryAccessor, let coreDataManager = self.coreDataManager else {
@@ -57,7 +62,9 @@ class TreatmentsViewController : UIViewController {
 			// Running in the completionHandler thread will
 			// result in issues.
 			coreDataManager.mainManagedObjectContext.performAndWait {
+                
 				let _ = treatmentEntryAccessor.newTreatmentsIfRequired(responses: responses)
+                
 				coreDataManager.saveChanges()
 
 				// Update UI, run at main thread
@@ -66,14 +73,19 @@ class TreatmentsViewController : UIViewController {
 					
 					// Uploads to nighscout and if success display an alert.
 					nightScoutUploadManager.uploadTreatmentsToNightScout(successHandler:alertsuccessHandler)
+                    
 				}
+                
 			}
+            
 		}
+        
 	}
 	
     // MARK: - View Life Cycle
     
 	override func viewWillAppear(_ animated: Bool) {
+        
 		super.viewWillAppear(animated)
 		
 		// Fixes dark mode issues
@@ -84,6 +96,7 @@ class TreatmentsViewController : UIViewController {
 		}
 		
 		self.titleNavigation.title = Texts_TreatmentsView.treatmentsTitle
+        
 	}
 	
 
@@ -135,7 +148,7 @@ class TreatmentsViewController : UIViewController {
         
 		guard let treatmentEntryAccessor = treatmentEntryAccessor else { return }
         
-		self.treatmentCollection = TreatmentCollection(treatments: treatmentEntryAccessor.getLatestTreatments())
+        self.treatmentCollection = TreatmentCollection(treatments: treatmentEntryAccessor.getLatestTreatments(howOld: TimeInterval.init(days: 100)))
 
 		self.tableView.reloadData()
         
